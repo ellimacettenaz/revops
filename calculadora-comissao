@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calculadora de Comissão</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f1f5f9; font-family: 'Inter', system-ui, sans-serif; }
+    input[type=number] { -moz-appearance: textfield; }
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    input[type=number]:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    input[type=range] { -webkit-appearance: none; height: 4px; background: #e2e8f0; border-radius: 2px; outline: none; cursor: pointer; width: 100%; margin-top: 12px; accent-color: #3b82f6; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #3b82f6; cursor: pointer; box-shadow: 0 1px 4px rgba(59,130,246,.4); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+
+const fmt = (v) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+const fmtPct = (v) => `${(v * 100).toFixed(0)}%`;
+
+// ─── Cálculos ───────────────────────────────────────────────────────────────
+function calcFlat({ fixo, pctFlat, receita }) {
+  const c = receita * (pctFlat / 100);
+  return { comissao: c, total: fixo + c };
+}
+function calcAcel({ quota, fixo, pctBase, pctAcel, threshold, receita }) {
+  const base = Math.min(receita, quota * threshold) * (pctBase / 100);
+  const extra = Math.max(0, receita - quota * threshold) * (pctAcel / 100);
+  return { comissao: base + extra, total: fixo + base + extra };
+}
+function calcFaixas({ quota, fixo, faixas, receita }) {
+  const a = receita / quota;
+  let p = 0;
+  for (const f of faixas) { if (a >= f.min) p = f.pct; }
+  const c = receita * (p / 100);
+  return { comissao: c, total: fixo + c };
+}
+
+// ─── Perguntas do modo guiado ────────────────────────────────────────────────
+const QUESTIONS = [
+  {
+    id: "segmento",
+    pergunta: "Qual é o segmento da sua empresa?",
+    ajuda: "Isso nos ajuda a sugerir percentuais de comissão compatíveis com o mercado.",
+    opcoes: [
+      { valor: "saas", label: "SaaS / Software", emoji: "💻", desc: "Ex: sistemas de gestão, plataformas, ferramentas B2B" },
+      { valor: "servicos", label: "Serviços / Consultoria", emoji: "🤝", desc: "Ex: agências, escritórios, empresas de RH, contabilidade" },
+      { valor: "industria", label: "Indústria / Distribuição", emoji: "🏭", desc: "Ex: distribuidoras, atacadistas, fabricantes" },
+      { valor: "varejo", label: "Varejo / E-commerce", emoji: "🛒", desc: "Ex: lojas físicas, marketplaces, direct-to-consumer" },
+      { valor: "outro", label: "Outro", emoji: "📦", desc: "Ex: saúde, educação, imóveis, financeiro" },
+    ],
+  },
+  {
+    id: "ciclo",
+    pergunta: "Como é o ciclo de venda?",
+    ajuda: "Ciclos longos geralmente pedem comissões maiores por negócio. Ciclos curtos permitem volume.",
+    opcoes: [
+      { valor: "curto", label: "Curto (dias)", emoji: "⚡", desc: "O cliente decide rápido" },
+      { valor: "medio", label: "Médio (semanas)", emoji: "📅", desc: "Algumas reuniões até fechar" },
+      { valor: "longo", label: "Longo (meses)", emoji: "🗓️", desc: "Processo estruturado, vários decisores" },
+    ],
+  },
+  {
+    id: "ticket",
+    pergunta: "Qual é o ticket médio por venda?",
+    ajuda: "Ticket médio é o valor típico de cada negócio fechado. Isso define a quota e o potencial de ganho.",
+    opcoes: [
+      { valor: "baixo", label: "Até R$ 5.000", emoji: "💰", desc: "Venda transacional" },
+      { valor: "medio", label: "R$ 5k – R$ 50k", emoji: "💰💰", desc: "Venda consultiva" },
+      { valor: "alto", label: "Acima de R$ 50k", emoji: "💰💰💰", desc: "Venda enterprise / complexa" },
+    ],
+  },
+  {
+    id: "experiencia",
+    pergunta: "Qual o perfil do vendedor que você vai contratar?",
+    ajuda: "O nível de experiência influencia o salário fixo e o quanto de variável faz sentido oferecer.",
+    opcoes: [
+      { valor: "junior", label: "Júnior", emoji: "🌱", desc: "Pouca ou nenhuma experiência em vendas" },
+      { valor: "pleno", label: "Pleno", emoji: "🌿", desc: "2–4 anos de experiência" },
+      { valor: "senior", label: "Sênior", emoji: "🌳", desc: "5+ anos, já tem carteira" },
+    ],
+  },
+  {
+    id: "objetivo",
+    pergunta: "Qual é o principal objetivo com esse vendedor?",
+    ajuda: "Isso define se faz mais sentido incentivar volume, grandes negócios ou consistência.",
+    opcoes: [
+      { valor: "volume", label: "Fechar muitos negócios", emoji: "🎯", desc: "Quantidade é o foco" },
+      { valor: "crescimento", label: "Crescer contas existentes", emoji: "📈", desc: "Expansão e upsell" },
+      { valor: "novos", label: "Abrir novos clientes", emoji: "🚀", desc: "Prospecção e conquista" },
+    ],
+  },
+];
+
+// ─── Lógica de recomendação ──────────────────────────────────────────────────
+function gerarRecomendacao(respostas) {
+  const { segmento, ciclo, ticket, experiencia, objetivo } = respostas;
+
+  // Fixo base por nível
+  const fixoBase = { junior: 3000, pleno: 5000, senior: 8000 }[experiencia] || 5000;
+
+  // Quota: baseada no ticket e ciclo
+  const ticketRef = { baixo: 3000, medio: 20000, alto: 80000 }[ticket] || 20000;
+  const negMes = { curto: 15, medio: 5, longo: 2 }[ciclo] || 5;
+  const quota = ticketRef * negMes;
+
+  // Pct flat de referência por segmento
+  const pctFlatRef = {
+    saas: 8, servicos: 10, industria: 5, varejo: 3, outro: 6,
+  }[segmento] || 6;
+
+  // Modelo recomendado
+  let modeloRec, razao;
+  if (ciclo === "curto" && ticket === "baixo") {
+    modeloRec = "flat";
+    razao = "Com ciclo curto e ticket baixo, a simplicidade do flat funciona melhor — o vendedor consegue calcular o ganho na hora e se motiva a fechar volume.";
+  } else if (objetivo === "crescimento") {
+    modeloRec = "faixas";
+    razao = "Para crescimento de contas, faixas incentivam o vendedor a ir além da meta sem criar pressão excessiva por volume.";
+  } else if (ciclo === "longo" || ticket === "alto") {
+    modeloRec = "acelerador";
+    razao = "Com ciclo longo ou ticket alto, aceleradores recompensam quem supera a meta — cada negócio a mais vale muito, então faz sentido pagar mais por isso.";
+  } else {
+    modeloRec = "acelerador";
+    razao = "Aceleradores tendem a funcionar bem para a maioria dos perfis: incentivam bater a meta e recompensam quem vai além.";
+  }
+
+  // Proporção fixo/variável por experiência
+  const propFixo = { junior: 0.6, pleno: 0.5, senior: 0.4 }[experiencia] || 0.5;
+  const oteAlvo = fixoBase / propFixo;
+  const comissaoAlvo = oteAlvo - fixoBase;
+  const pctSugerido = Math.round((comissaoAlvo / quota) * 100 * 10) / 10; // resultado em %, com 1 casa decimal
+
+  return {
+    fixo: fixoBase,
+    quota,
+    pctFlat: pctSugerido,
+    pctBase: Math.round(pctSugerido * 0.7 * 2) / 2,
+    pctAcel: Math.round(pctSugerido * 1.5 * 2) / 2,
+    threshold: 1.0,
+    faixas: [
+      { min: 0, pct: Math.round(pctSugerido * 0.5 * 2) / 2 },
+      { min: 0.75, pct: Math.round(pctSugerido * 0.85 * 2) / 2 },
+      { min: 1.0, pct: pctSugerido },
+      { min: 1.25, pct: Math.round(pctSugerido * 1.4 * 2) / 2 },
+    ],
+    modeloRec,
+    razao,
+    propFixo,
+  };
+}
+
+// ─── Constantes visuais ──────────────────────────────────────────────────────
+const MODELS = [
+  { id: "flat", label: "Flat", desc: "Percentual fixo sobre tudo que vender" },
+  { id: "acelerador", label: "Aceleradores", desc: "% maior depois de bater o gatilho" },
+  { id: "faixas", label: "Faixas", desc: "Percentual sobe conforme o atingimento" },
+];
+const ATH_LEVELS = [0, 0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0];
+const COLORS = { flat: "#b45309", acelerador: "#047857", faixas: "#4338ca" };
+const BG = { flat: "#fef3c7", acelerador: "#d1fae5", faixas: "#e0e7ff" };
+const BORDER = { flat: "#fde68a", acelerador: "#6ee7b7", faixas: "#a5b4fc" };
+
+// ─── Componentes auxiliares ──────────────────────────────────────────────────
+function Tip({ text }) {
+  const [on, setOn] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <span onMouseEnter={() => setOn(true)} onMouseLeave={() => setOn(false)} onClick={() => setOn(v => !v)}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, borderRadius: "50%", background: "#e2e8f0", color: "#64748b", fontSize: 9, fontWeight: 700, cursor: "pointer", marginLeft: 5, userSelect: "none" }}>?</span>
+      {on && (
+        <span style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: "#1e293b", color: "#f1f5f9", fontSize: 12, padding: "10px 13px", borderRadius: 8, width: 220, lineHeight: 1.6, zIndex: 999, boxShadow: "0 8px 24px rgba(0,0,0,.2)", whiteSpace: "normal", textAlign: "left", pointerEvents: "none" }}>
+          {text}
+          <span style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "#1e293b" }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function Label({ children, tip }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+      <span style={{ fontSize: 11, color: "#94a3b8", letterSpacing: 0.6, textTransform: "uppercase", fontWeight: 600 }}>{children}</span>
+      {tip && <Tip text={tip} />}
+    </div>
+  );
+}
+
+function NumInput({ value, onChange, width = "100%" }) {
+  return <input type="number" value={value} onChange={e => onChange(+e.target.value)}
+    style={{ background: "#fff", border: "1.5px solid #e2e8f0", color: "#1e293b", padding: "9px 12px", borderRadius: 8, fontFamily: "inherit", fontSize: 15, width, outline: "none" }} />;
+}
+
+function Slider({ value, onChange, min, max, step }) {
+  return <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)}
+    style={{ width: "100%", marginTop: 12, accentColor: "#3b82f6" }} />;
+}
+
+// ─── Tela do guia ────────────────────────────────────────────────────────────
+function GuideScreen({ onConcluir }) {
+  const [etapa, setEtapa] = useState(0);
+  const [respostas, setRespostas] = useState({});
+  const [saindo, setSaindo] = useState(false);
+
+  const q = QUESTIONS[etapa];
+  const total = QUESTIONS.length;
+  const progresso = ((etapa) / total) * 100;
+
+  function responder(valor) {
+    const novas = { ...respostas, [q.id]: valor };
+    setRespostas(novas);
+    if (etapa < total - 1) {
+      setSaindo(true);
+      setTimeout(() => { setEtapa(e => e + 1); setSaindo(false); }, 200);
+    } else {
+      const rec = gerarRecomendacao(novas);
+      onConcluir(rec);
+    }
+  }
+
+  function voltar() {
+    if (etapa > 0) { setSaindo(true); setTimeout(() => { setEtapa(e => e - 1); setSaindo(false); }, 150); }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f1f5f9", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 20px" }}>
+      <div style={{ width: "100%", maxWidth: 560 }}>
+
+        {/* Logo */}
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <div style={{ fontFamily: "'Lora', serif", fontSize: 20, fontWeight: 700, color: "#1e293b" }}>Calculadora de Comissão</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>Vamos montar o plano certo pra você</div>
+        </div>
+
+        {/* Progresso */}
+        <div style={{ marginBottom: 32 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>
+            <span>Pergunta {etapa + 1} de {total}</span>
+            <span>{Math.round(((etapa) / total) * 100)}% concluído</span>
+          </div>
+          <div style={{ height: 4, background: "#e2e8f0", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${progresso}%`, background: "#3b82f6", borderRadius: 2, transition: "width .4s ease" }} />
+          </div>
+        </div>
+
+        {/* Card da pergunta */}
+        <div style={{ background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 16, padding: "32px 28px", boxShadow: "0 4px 24px rgba(0,0,0,.06)", opacity: saindo ? 0 : 1, transform: saindo ? "translateY(8px)" : "translateY(0)", transition: "opacity .2s, transform .2s" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#1e293b", marginBottom: 8, lineHeight: 1.4 }}>{q.pergunta}</div>
+          <div style={{ fontSize: 13.5, color: "#64748b", marginBottom: 28, lineHeight: 1.6 }}>{q.ajuda}</div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {q.opcoes.map(op => {
+              const selecionado = respostas[q.id] === op.valor;
+              return (
+                <button key={op.valor} onClick={() => responder(op.valor)} style={{
+                  display: "flex", alignItems: "center", gap: 14, padding: "14px 18px",
+                  border: "1.5px solid", borderRadius: 10, cursor: "pointer",
+                  fontFamily: "inherit", textAlign: "left", transition: "all .15s",
+                  borderColor: selecionado ? "#3b82f6" : "#e2e8f0",
+                  background: selecionado ? "#eff6ff" : "#fff",
+                }}>
+                  <span style={{ fontSize: 22 }}>{op.emoji}</span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: selecionado ? "#1d4ed8" : "#1e293b" }}>{op.label}</div>
+                    {op.desc && <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>{op.desc}</div>}
+                  </div>
+                  {selecionado && <span style={{ marginLeft: "auto", color: "#3b82f6", fontSize: 18 }}>✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Voltar */}
+        {etapa > 0 && (
+          <button onClick={voltar} style={{ marginTop: 20, background: "none", border: "none", color: "#94a3b8", fontSize: 13, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}>
+            ← Voltar
+          </button>
+        )}
+
+        {/* Pular */}
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <button onClick={() => onConcluir(gerarRecomendacao({ segmento: "saas", ciclo: "medio", ticket: "medio", experiencia: "pleno", objetivo: "novos" }))}
+            style={{ background: "none", border: "none", color: "#cbd5e1", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            Pular e montar manualmente →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Tela de recomendação ─────────────────────────────────────────────────────
+function RecScreen({ rec, onAceitar, onAjustar }) {
+  const modelLabel = MODELS.find(m => m.id === rec.modeloRec)?.label;
+  const color = COLORS[rec.modeloRec];
+  const bg = BG[rec.modeloRec];
+  const border = BORDER[rec.modeloRec];
+
+  const oteVal =
+    rec.modeloRec === "flat"
+      ? calcFlat({ fixo: rec.fixo, pctFlat: rec.pctFlat, receita: rec.quota }).total
+      : rec.modeloRec === "acelerador"
+      ? calcAcel({ quota: rec.quota, fixo: rec.fixo, pctBase: rec.pctBase, pctAcel: rec.pctAcel, threshold: rec.threshold, receita: rec.quota }).total
+      : calcFaixas({ quota: rec.quota, fixo: rec.fixo, faixas: rec.faixas, receita: rec.quota }).total;
+
+  const propVariavel = Math.round((1 - rec.propFixo) * 100);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f1f5f9", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 20px" }}>
+      <div style={{ width: "100%", maxWidth: 580 }}>
+
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Com base nas suas respostas</div>
+          <div style={{ fontFamily: "'Lora', serif", fontSize: 26, fontWeight: 700, color: "#1e293b", lineHeight: 1.3 }}>Aqui está o plano que<br/>recomendamos pra você</div>
+        </div>
+
+        {/* Modelo recomendado */}
+        <div style={{ background: bg, border: `1.5px solid ${border}`, borderRadius: 16, padding: "24px 28px", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.8, color, marginBottom: 6 }}>Modelo recomendado</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color, marginBottom: 10 }}>{modelLabel}</div>
+          <div style={{ fontSize: 13.5, color: "#475569", lineHeight: 1.7 }}>{rec.razao}</div>
+        </div>
+
+        {/* Números sugeridos */}
+        {(() => {
+          const custoFixoEmpresa = rec.fixo * 1.7; // encargos CLT ~70%
+          const custoTotalEmpresa = custoFixoEmpresa + (oteVal - rec.fixo); // fixo+encargos + comissão
+          const pctReceitaRemuneracao = (oteVal / rec.quota) * 100;
+          return (
+            <div style={{ background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 16, padding: "24px 28px", marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", marginBottom: 20 }}>Valores sugeridos</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+                {[
+                  { label: "Salário fixo", valor: fmt(rec.fixo), tip: "Base mensal garantida, independente das vendas." },
+                  { label: "Quota mensal", valor: fmt(rec.quota), tip: "Meta de vendas esperada por mês. Ajuste conforme seu mercado." },
+                  { label: "OTE estimado", valor: fmt(oteVal), tip: "Ganho total esperado se o vendedor bater 100% da quota: fixo + comissão." },
+                  { label: "Proporção fixo/variável", valor: `${Math.round(rec.propFixo * 100)}% / ${propVariavel}%`, tip: "Quanto do salário total é garantido versus variável. Mais variável = mais risco e mais potencial de ganho." },
+                ].map(item => (
+                  <div key={item.label}>
+                    <div style={{ display: "flex", alignItems: "center", fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 4 }}>
+                      {item.label} <Tip text={item.tip} />
+                    </div>
+                    <div style={{ fontFamily: "'Lora', serif", fontSize: 20, fontWeight: 700, color: "#1e293b" }}>{item.valor}</div>
+                  </div>
+                ))}
+              </div>
+              {/* Custo pra empresa */}
+              <div style={{ borderTop: "1.5px solid #f1f5f9", paddingTop: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 12 }}>
+                  Custo pra empresa <Tip text="Inclui encargos trabalhistas estimados (~70% sobre o fixo para CLT). Comissão não tem encargo. Consulte seu contador para valores exatos." />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                  {[
+                    { label: "Fixo + encargos", valor: fmt(custoFixoEmpresa), tip: "Salário fixo com encargos CLT estimados (INSS, FGTS, férias, 13º). Aproximadamente 1,7× o salário bruto." },
+                    { label: "Custo total na meta", valor: fmt(custoTotalEmpresa), tip: "Fixo com encargos + comissão. É o que a empresa desembolsa quando o vendedor bate 100% da quota." },
+                    { label: "% da receita", valor: `${pctReceitaRemuneracao.toFixed(1)}%`, tip: "Percentual da receita gerada que vai para a remuneração do vendedor (OTE ÷ quota). O ideal é entre 8–20% dependendo do segmento e margem." },
+                  ].map(item => (
+                    <div key={item.label} style={{ background: "#f8fafc", borderRadius: 10, padding: "12px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", fontSize: 10, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        {item.label} <Tip text={item.tip} />
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "#1e293b" }}>{item.valor}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Aviso */}
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "12px 16px", fontSize: 12.5, color: "#92400e", lineHeight: 1.6, marginBottom: 28 }}>
+          <strong>Esses valores são um ponto de partida.</strong> Ajuste conforme a realidade do seu mercado, margem do produto e o que você consegue encontrar de candidatos.
+        </div>
+
+        {/* CTAs */}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button onClick={onAceitar} style={{ flex: 1, background: "#1e293b", color: "#fff", border: "none", padding: "14px 24px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600 }}>
+            Usar esses valores e simular →
+          </button>
+          <button onClick={onAjustar} style={{ background: "#fff", color: "#64748b", border: "1.5px solid #e2e8f0", padding: "14px 20px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500 }}>
+            Ajustar manualmente
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── App principal ────────────────────────────────────────────────────────────
+function App() {
+  const [tela, setTela] = useState("guia"); // guia | rec | plano | sim
+  const [rec, setRec] = useState(null);
+
+  const [active, setActive] = useState(["flat"]);
+  const [fixo, setFixo] = useState(5000);
+  const [quota, setQuota] = useState(50000);
+  const [pctFlat, setPctFlat] = useState(5);
+  const [pctBase, setPctBase] = useState(4);
+  const [pctAcel, setPctAcel] = useState(8);
+  const [threshold, setThreshold] = useState(1.0);
+  const [faixas, setFaixas] = useState([{ min: 0, pct: 2 }, { min: 0.75, pct: 4 }, { min: 1.0, pct: 6 }, { min: 1.25, pct: 8 }]);
+  const [receita, setReceita] = useState(null);
+
+  function aplicarRec(r) {
+    setRec(r);
+    setTela("rec");
+  }
+
+  function aceitarRec() {
+    setFixo(rec.fixo);
+    setQuota(rec.quota);
+    setPctFlat(rec.pctFlat);
+    setPctBase(rec.pctBase);
+    setPctAcel(rec.pctAcel);
+    setThreshold(rec.threshold);
+    setFaixas(rec.faixas);
+    setActive([rec.modeloRec]);
+    setReceita(rec.quota);
+    setTela("sim");
+  }
+
+  function ajustarRec() {
+    setFixo(rec.fixo);
+    setQuota(rec.quota);
+    setPctFlat(rec.pctFlat);
+    setPctBase(rec.pctBase);
+    setPctAcel(rec.pctAcel);
+    setThreshold(rec.threshold);
+    setFaixas(rec.faixas);
+    setActive([rec.modeloRec]);
+    setReceita(rec.quota);
+    setTela("plano");
+  }
+
+  const toggle = (id) => setActive(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  const receitaVal = receita ?? quota;
+
+  const res = useMemo(() => ({
+    flat: calcFlat({ fixo, pctFlat, receita: receitaVal }),
+    acelerador: calcAcel({ quota, fixo, pctBase, pctAcel, threshold, receita: receitaVal }),
+    faixas: calcFaixas({ quota, fixo, faixas, receita: receitaVal }),
+  }), [fixo, quota, pctFlat, pctBase, pctAcel, threshold, faixas, receitaVal]);
+
+  const ote = useMemo(() => ({
+    flat: calcFlat({ fixo, pctFlat, receita: quota }),
+    acelerador: calcAcel({ quota, fixo, pctBase, pctAcel, threshold, receita: quota }),
+    faixas: calcFaixas({ quota, fixo, faixas, receita: quota }),
+  }), [fixo, quota, pctFlat, pctBase, pctAcel, threshold, faixas]);
+
+  const ating = receitaVal / quota;
+  const curve = ATH_LEVELS.map(a => {
+    const r = quota * a;
+    return { a, flat: calcFlat({ fixo, pctFlat, receita: r }).total, acelerador: calcAcel({ quota, fixo, pctBase, pctAcel, threshold, receita: r }).total, faixas: calcFaixas({ quota, fixo, faixas, receita: r }).total };
+  });
+  const maxY = Math.max(...curve.map(d => Math.max(d.flat, d.acelerador, d.faixas)));
+  const chartH = 150;
+  const cardStyle = { background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 14, padding: 24 };
+
+  if (tela === "guia") return <GuideScreen onConcluir={aplicarRec} />;
+  if (tela === "rec") return <RecScreen rec={rec} onAceitar={aceitarRec} onAjustar={ajustarRec} />;
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f1f5f9", fontFamily: "'Inter', system-ui, sans-serif", color: "#1e293b" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:wght@600;700&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        input[type=number] { -moz-appearance: textfield; }
+        input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+        input[type=number]:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+        input[type=range] { -webkit-appearance: none; height: 4px; background: #e2e8f0; border-radius: 2px; outline: none; cursor: pointer; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #3b82f6; cursor: pointer; box-shadow: 0 1px 4px rgba(59,130,246,.4); }
+      `}</style>
+
+      {/* Header */}
+      <div style={{ background: "#fff", borderBottom: "1.5px solid #e2e8f0", padding: "16px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div>
+            <div style={{ fontFamily: "'Lora', serif", fontSize: 17, fontWeight: 700 }}>Calculadora de Comissão</div>
+          </div>
+          {rec && (
+            <span style={{ fontSize: 11, background: BG[rec.modeloRec], color: COLORS[rec.modeloRec], border: `1px solid ${BORDER[rec.modeloRec]}`, padding: "3px 10px", borderRadius: 20, fontWeight: 600 }}>
+              Recomendado: {MODELS.find(m => m.id === rec.modeloRec)?.label}
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={() => setTela("guia")} style={{ padding: "7px 14px", border: "1.5px solid #e2e8f0", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, background: "#fff", color: "#94a3b8" }}>
+            ↩ Refazer perguntas
+          </button>
+          {["plano", "sim"].map((t, i) => (
+            <button key={t} onClick={() => setTela(t)} style={{ padding: "8px 18px", border: "1.5px solid", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500, transition: "all .15s", borderColor: tela === t ? "#1e293b" : "#e2e8f0", background: tela === t ? "#1e293b" : "#fff", color: tela === t ? "#fff" : "#94a3b8" }}>
+              {i + 1} · {t === "plano" ? "Montar o plano" : "Simular ganhos"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "32px 20px" }}>
+
+        {/* ── PLANO ── */}
+        {tela === "plano" && (
+          <div>
+            <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 14 }}>Parâmetros base</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 36 }}>
+              <div style={cardStyle}>
+                <Label tip="O valor que o vendedor recebe todo mês, independente do que vender.">Salário fixo</Label>
+                <NumInput value={fixo} onChange={setFixo} />
+                <Slider value={fixo} onChange={setFixo} min={1000} max={30000} step={500} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#cbd5e1", marginTop: 4 }}><span>R$ 1.000</span><span>R$ 30.000</span></div>
+              </div>
+              <div style={cardStyle}>
+                <Label tip="A meta de vendas mensal — o valor em reais que a empresa espera que o vendedor feche. Vendeu mais? Superou a meta. Vendeu menos? Ficou abaixo.">
+                  Quota mensal <span style={{ fontWeight: 400, fontSize: 11, color: "#cbd5e1", textTransform: "none" }}>(meta de vendas)</span>
+                </Label>
+                <NumInput value={quota} onChange={setQuota} />
+                <Slider value={quota} onChange={setQuota} min={10000} max={500000} step={5000} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#cbd5e1", marginTop: 4 }}><span>R$ 10.000</span><span>R$ 500.000</span></div>
+                <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#1d4ed8", lineHeight: 1.6, marginTop: 14 }}>
+                  <strong>Dica:</strong> Uma boa quota é aquela que 60–70% dos vendedores conseguem bater.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 6 }}>Modelos</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 14 }}>Selecione um ou mais para comparar.</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+              {MODELS.map(m => (
+                <button key={m.id} onClick={() => toggle(m.id)} style={{ padding: "7px 18px", borderRadius: 20, border: "1.5px solid", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit", transition: "all .15s", borderColor: active.includes(m.id) ? COLORS[m.id] : "#e2e8f0", color: active.includes(m.id) ? COLORS[m.id] : "#94a3b8", background: active.includes(m.id) ? BG[m.id] : "#fff" }}>
+                  {m.label} {rec?.modeloRec === m.id ? "⭐" : ""}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+              {active.includes("flat") && (
+                <div style={{ ...cardStyle, borderColor: BORDER.flat }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: COLORS.flat }} />
+                    <span style={{ fontSize: 14, fontWeight: 700, color: COLORS.flat }}>Comissão Flat</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "#78716c", lineHeight: 1.6, marginBottom: 20 }}>Percentual fixo sobre tudo que o vendedor fechar.</p>
+                  <Label tip="A cada R$ 100 vendidos, o vendedor fica com esse percentual.">Percentual sobre a receita</Label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <NumInput value={pctFlat} onChange={setPctFlat} width="90px" />
+                    <span style={{ color: "#94a3b8" }}>%</span>
+                  </div>
+                  <Slider value={pctFlat} onChange={setPctFlat} min={0.5} max={20} step={0.5} />
+                  <div style={{ marginTop: 10, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b", lineHeight: 1.7 }}>
+                    <strong style={{ color: "#475569" }}>Referência de mercado:</strong><br/>
+                    SaaS / Software: 6–10% &nbsp;·&nbsp; Serviços: 8–12%<br/>
+                    Indústria / Distribuição: 3–6% &nbsp;·&nbsp; Varejo: 1–4%
+                  </div>
+                  <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1.5px solid #f1f5f9" }}>
+                    <Label tip="OTE = fixo + comissão se bater 100% da quota. É o número que você coloca na oferta de emprego.">OTE — ganho na meta</Label>
+                    <div style={{ fontFamily: "'Lora', serif", fontSize: 24, fontWeight: 700, color: COLORS.flat }}>{fmt(ote.flat.total)}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4, marginBottom: 12 }}>Fixo {fmt(fixo)} + Comissão {fmt(ote.flat.comissao)}</div>
+                    <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>
+                      <div style={{ display: "flex", alignItems: "center", fontWeight: 600, color: "#475569", marginBottom: 4 }}>Custo pra empresa na meta <Tip text="Encargos CLT estimados em ~70% sobre o fixo. Comissão não tem encargo. Estimativa — consulte seu contador." /></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fixo + encargos</span><span>{fmt(fixo * 1.7)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Comissão</span><span>{fmt(ote.flat.comissao)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: "#1e293b", borderTop: "1px solid #e2e8f0", marginTop: 4, paddingTop: 4 }}><span>Total</span><span>{fmt(fixo * 1.7 + ote.flat.comissao)}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {active.includes("acelerador") && (
+                <div style={{ ...cardStyle, borderColor: BORDER.acelerador }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: COLORS.acelerador }} />
+                    <span style={{ fontSize: 14, fontWeight: 700, color: COLORS.acelerador }}>Com Aceleradores</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "#78716c", lineHeight: 1.6, marginBottom: 20 }}>% menor antes do gatilho, % maior depois. Incentiva superar a meta.</p>
+                  <Label tip="Percentual pago antes de atingir o gatilho.">% base (antes do gatilho)</Label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <NumInput value={pctBase} onChange={setPctBase} width="90px" />
+                    <span style={{ color: "#94a3b8" }}>%</span>
+                  </div>
+                  <Slider value={pctBase} onChange={setPctBase} min={0.5} max={15} step={0.5} />
+                  <div style={{ marginBottom: 14 }} />
+                  <Label tip="Percentual maior, pago sobre tudo acima do gatilho.">% acelerado (após o gatilho)</Label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <NumInput value={pctAcel} onChange={setPctAcel} width="90px" />
+                    <span style={{ color: "#94a3b8" }}>%</span>
+                  </div>
+                  <Slider value={pctAcel} onChange={setPctAcel} min={0.5} max={30} step={0.5} />
+                  <div style={{ marginTop: 10, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b", lineHeight: 1.7 }}>
+                    <strong style={{ color: "#475569" }}>Referência de mercado:</strong><br/>
+                    Base típico: 50–70% do % acelerado &nbsp;·&nbsp; Acelerador: 1,5–2× o base<br/>
+                    Ex: 5% base → 8–10% acelerado
+                  </div>
+                  <div style={{ marginBottom: 14 }} />
+                  <Label tip="A partir de qual % da quota o acelerador é ativado.">Gatilho</Label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[0.75, 0.9, 1.0].map(t => (
+                      <button key={t} onClick={() => setThreshold(t)} style={{ padding: "6px 12px", borderRadius: 6, border: "1.5px solid", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600, borderColor: threshold === t ? COLORS.acelerador : "#e2e8f0", background: threshold === t ? BG.acelerador : "#fff", color: threshold === t ? COLORS.acelerador : "#94a3b8" }}>
+                        {fmtPct(t)}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1.5px solid #f1f5f9" }}>
+                    <Label tip="OTE = fixo + comissão se bater 100% da quota.">OTE — ganho na meta</Label>
+                    <div style={{ fontFamily: "'Lora', serif", fontSize: 24, fontWeight: 700, color: COLORS.acelerador }}>{fmt(ote.acelerador.total)}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4, marginBottom: 12 }}>Fixo {fmt(fixo)} + Comissão {fmt(ote.acelerador.comissao)}</div>
+                    <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>
+                      <div style={{ display: "flex", alignItems: "center", fontWeight: 600, color: "#475569", marginBottom: 4 }}>Custo pra empresa na meta <Tip text="Encargos CLT estimados em ~70% sobre o fixo. Estimativa — consulte seu contador." /></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fixo + encargos</span><span>{fmt(fixo * 1.7)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Comissão</span><span>{fmt(ote.acelerador.comissao)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: "#1e293b", borderTop: "1px solid #e2e8f0", marginTop: 4, paddingTop: 4 }}><span>Total</span><span>{fmt(fixo * 1.7 + ote.acelerador.comissao)}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {active.includes("faixas") && (
+                <div style={{ ...cardStyle, borderColor: BORDER.faixas }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: COLORS.faixas }} />
+                    <span style={{ fontSize: 14, fontWeight: 700, color: COLORS.faixas }}>Por Faixas</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "#78716c", lineHeight: 1.6, marginBottom: 20 }}>O % sobe conforme o atingimento. Mais vendas = % maior sobre tudo.</p>
+                  <Label tip="'A partir de' = % da quota que ativa a faixa. 'Comissão %' = percentual aplicado sobre toda a receita do mês.">Faixas</Label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6, marginBottom: 8 }}>
+                    <span style={{ fontSize: 10, color: "#94a3b8", textTransform: "uppercase" }}>A partir de (%)</span>
+                    <span style={{ fontSize: 10, color: "#94a3b8", textTransform: "uppercase" }}>Comissão (%)</span>
+                    <span />
+                  </div>
+                  {faixas.map((f, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6, alignItems: "center", marginBottom: 8 }}>
+                      <NumInput value={Math.round(f.min * 100)} onChange={v => { const n = [...faixas]; n[i] = { ...n[i], min: v / 100 }; setFaixas(n); }} />
+                      <NumInput value={f.pct} onChange={v => { const n = [...faixas]; n[i] = { ...n[i], pct: v }; setFaixas(n); }} />
+                      <button onClick={() => setFaixas(faixas.filter((_, j) => j !== i))} style={{ background: "none", border: "1.5px solid #e2e8f0", color: "#94a3b8", width: 30, height: 30, borderRadius: 6, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                    </div>
+                  ))}
+                  <button onClick={() => setFaixas([...faixas, { min: 1.5, pct: 10 }])} style={{ background: "none", border: "1.5px dashed #cbd5e1", color: "#94a3b8", padding: 9, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, width: "100%", marginTop: 4 }}>+ Adicionar faixa</button>
+                  <div style={{ marginTop: 10, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b", lineHeight: 1.7 }}>
+                    <strong style={{ color: "#475569" }}>Referência de mercado:</strong><br/>
+                    Faixa abaixo da meta: 50–80% do % na meta<br/>
+                    Faixa acima de 125%: 120–150% do % na meta
+                  </div>
+                  <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1.5px solid #f1f5f9" }}>
+                    <Label tip="OTE = fixo + comissão se bater 100% da quota.">OTE — ganho na meta</Label>
+                    <div style={{ fontFamily: "'Lora', serif", fontSize: 24, fontWeight: 700, color: COLORS.faixas }}>{fmt(ote.faixas.total)}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4, marginBottom: 12 }}>Fixo {fmt(fixo)} + Comissão {fmt(ote.faixas.comissao)}</div>
+                    <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>
+                      <div style={{ display: "flex", alignItems: "center", fontWeight: 600, color: "#475569", marginBottom: 4 }}>Custo pra empresa na meta <Tip text="Encargos CLT estimados em ~70% sobre o fixo. Estimativa — consulte seu contador." /></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fixo + encargos</span><span>{fmt(fixo * 1.7)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}><span>Comissão</span><span>{fmt(ote.faixas.comissao)}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: "#1e293b", borderTop: "1px solid #e2e8f0", marginTop: 4, paddingTop: 4 }}><span>Total</span><span>{fmt(fixo * 1.7 + ote.faixas.comissao)}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: 28, textAlign: "right" }}>
+              <button onClick={() => setTela("sim")} style={{ background: "#1e293b", color: "#fff", border: "none", padding: "12px 32px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>
+                Simular ganhos →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── SIMULAÇÃO ── */}
+        {tela === "sim" && (
+          <div>
+            <div style={{ ...cardStyle, marginBottom: 28 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase" }}>Receita do mês</span>
+                    <Tip text="Arraste o slider para simular quanto o vendedor vendeu. Os cards abaixo mostram o ganho em cada modelo." />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "'Lora', serif", fontSize: 36, fontWeight: 700 }}>{fmt(receitaVal)}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, padding: "3px 12px", borderRadius: 20, color: ating >= 1 ? "#047857" : ating >= 0.75 ? "#b45309" : "#dc2626", background: ating >= 1 ? "#d1fae5" : ating >= 0.75 ? "#fef3c7" : "#fee2e2" }}>
+                      {fmtPct(ating)} da quota {ating >= 1 ? "✓" : ""}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4 }}>Quota (meta)</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "#475569" }}>{fmt(quota)}</div>
+                </div>
+              </div>
+              <Slider value={receitaVal} onChange={setReceita} min={0} max={quota * 2} step={quota * 0.01} />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#cbd5e1", marginTop: 6 }}>
+                <span>R$ 0</span><span>50%</span><span style={{ color: "#3b82f6", fontWeight: 600 }}>100% (meta)</span><span>150%</span><span>200%</span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 28 }}>
+              {active.map(id => {
+                const r = res[id];
+                const oteVal = ote[id].total;
+                const ratio = Math.min(r.total / oteVal, 1);
+                return (
+                  <div key={id} style={{ ...cardStyle, borderColor: BORDER[id] }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: "50%", background: COLORS[id] }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: COLORS[id], textTransform: "uppercase", letterSpacing: 0.5 }}>{MODELS.find(m => m.id === id).label}</span>
+                      {rec?.modeloRec === id && <span style={{ fontSize: 10, background: BG[id], color: COLORS[id], padding: "1px 7px", borderRadius: 10, fontWeight: 600 }}>recomendado</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4 }}>Total do mês</div>
+                    <div style={{ fontFamily: "'Lora', serif", fontSize: 28, fontWeight: 700, color: COLORS[id], marginBottom: 14 }}>{fmt(r.total)}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#64748b", marginBottom: 6 }}>
+                      <span>Salário fixo</span><span style={{ fontWeight: 500 }}>{fmt(fixo)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 18 }}>
+                      <span style={{ color: "#64748b" }}>Comissão</span><span style={{ color: COLORS[id], fontWeight: 600 }}>{fmt(r.comissao)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ display: "flex", alignItems: "center" }}>vs OTE <Tip text={`OTE neste modelo é ${fmt(oteVal)} — ganho total esperado na meta.`} /></span>
+                      <span style={{ color: COLORS[id], fontWeight: 600 }}>{fmtPct(r.total / oteVal)}</span>
+                    </div>
+                    <div style={{ height: 5, background: "#f1f5f9", borderRadius: 3, overflow: "hidden", marginBottom: 16 }}>
+                      <div style={{ height: "100%", width: `${ratio * 100}%`, background: COLORS[id], borderRadius: 3, transition: "width .3s" }} />
+                    </div>
+                    {/* Custo empresa */}
+                    <div style={{ borderTop: "1.5px solid #f1f5f9", paddingTop: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", fontSize: 10, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                        Custo pra empresa <Tip text="Fixo com encargos CLT (~70%) + comissão. Estimativa — consulte seu contador." />
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b", marginBottom: 4 }}>
+                        <span>Fixo + encargos</span>
+                        <span style={{ fontWeight: 500 }}>{fmt(fixo * 1.7)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ color: "#64748b" }}>Comissão</span>
+                        <span style={{ fontWeight: 500 }}>{fmt(r.comissao)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, borderTop: "1px solid #f1f5f9", paddingTop: 6, marginTop: 2 }}>
+                        <span style={{ fontWeight: 600, color: "#475569" }}>Total empresa</span>
+                        <span style={{ fontWeight: 700, color: "#1e293b" }}>{fmt(fixo * 1.7 + r.comissao)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                        <span style={{ display: "flex", alignItems: "center" }}>% da receita <Tip text="Quanto da receita gerada vai pra remunerar o vendedor. Ideal: 8–20% dependendo do segmento." /></span>
+                        <span style={{ fontWeight: 600 }}>{receitaVal > 0 ? ((fixo * 1.7 + r.comissao) / receitaVal * 100).toFixed(1) : "—"}%</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {active.length > 0 && (
+              <div style={cardStyle}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Curva de ganhos por atingimento</div>
+                <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6, marginBottom: 24 }}>Salário total do vendedor em cada nível de atingimento. À direita da linha azul, ele superou a meta.</div>
+                <svg width="100%" viewBox={`0 0 680 ${chartH + 50}`} style={{ overflow: "visible" }}>
+                  {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+                    <g key={i}>
+                      <line x1={0} y1={chartH - t * chartH} x2={680} y2={chartH - t * chartH} stroke="#f1f5f9" strokeWidth={1} />
+                      <text x={-4} y={chartH - t * chartH + 4} textAnchor="end" fill="#cbd5e1" fontSize={9}>{fmt(maxY * t)}</text>
+                    </g>
+                  ))}
+                  {active.map(id => {
+                    const pts = curve.map((d, i) => `${(i / (curve.length - 1)) * 680},${chartH - (d[id] / maxY) * chartH}`).join(" ");
+                    return <polyline key={id} points={pts} fill="none" stroke={COLORS[id]} strokeWidth={2.5} strokeLinejoin="round" />;
+                  })}
+                  {(() => {
+                    const mx = (ATH_LEVELS.indexOf(1.0) / (ATH_LEVELS.length - 1)) * 680;
+                    return <g><line x1={mx} y1={0} x2={mx} y2={chartH} stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5,4" /><text x={mx} y={-8} textAnchor="middle" fill="#3b82f6" fontSize={10} fontWeight="600">meta</text></g>;
+                  })()}
+                  {ATH_LEVELS.map((a, i) => <text key={i} x={(i / (ATH_LEVELS.length - 1)) * 680} y={chartH + 20} textAnchor="middle" fill="#94a3b8" fontSize={10}>{fmtPct(a)}</text>)}
+                  <text x={340} y={chartH + 38} textAnchor="middle" fill="#cbd5e1" fontSize={10}>atingimento da quota</text>
+                </svg>
+                <div style={{ display: "flex", gap: 20, marginTop: 16, flexWrap: "wrap" }}>
+                  {active.map(id => (
+                    <div key={id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#64748b" }}>
+                      <div style={{ width: 18, height: 3, background: COLORS[id], borderRadius: 2 }} />
+                      {MODELS.find(m => m.id === id).label}
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#94a3b8" }}>
+                    <div style={{ width: 18, borderTop: "2px dashed #3b82f6" }} />
+                    Meta (100%)
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 24 }}>
+              <button onClick={() => setTela("plano")} style={{ background: "#fff", color: "#64748b", border: "1.5px solid #e2e8f0", padding: "11px 28px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500 }}>
+                ← Ajustar o plano
+              </button>
+            </div>
+
+            {/* Card de análise */}
+            {active.length > 0 && (() => {
+              const melhor = active.reduce((a, b) => res[a].total >= res[b].total ? a : b);
+              const maisBarato = active.reduce((a, b) => (fixo * 1.7 + res[a].comissao) <= (fixo * 1.7 + res[b].comissao) ? a : b);
+              const insights = [];
+
+              if (ating < 0.75) {
+                insights.push("⚠️ Abaixo de 75% da quota — o vendedor provavelmente está desmotivado. Revise se a meta é atingível ou se o suporte ao vendedor é suficiente.");
+              } else if (ating >= 1 && ating < 1.25) {
+                insights.push("✅ Na zona da meta — o plano está funcionando como esperado.");
+              } else if (ating >= 1.25) {
+                insights.push("🚀 Acima de 125% — o vendedor está acelerando. Verifique se o custo pra empresa ainda está dentro da margem aceitável.");
+              }
+
+              if (active.includes("acelerador") && ating >= threshold) {
+                insights.push(`💡 O acelerador está ativo neste nível (${fmtPct(ating)}). A comissão extra está recompensando a superação da meta.`);
+              }
+
+              const custoPctReceita = receitaVal > 0 ? ((fixo * 1.7 + res[melhor].comissao) / receitaVal * 100) : 0;
+              if (custoPctReceita > 25) {
+                insights.push(`🔴 O custo de remuneração está em ${custoPctReceita.toFixed(1)}% da receita — acima do recomendado. Considere aumentar a quota ou reduzir o percentual de comissão.`);
+              } else if (custoPctReceita > 0 && custoPctReceita <= 15) {
+                insights.push(`🟢 Custo de remuneração em ${custoPctReceita.toFixed(1)}% da receita — dentro de uma faixa saudável.`);
+              }
+
+              return (
+                <div style={{ ...cardStyle, marginTop: 20, borderLeft: "4px solid #3b82f6" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#1e293b", marginBottom: 16 }}>📊 Análise do plano</div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: active.length > 1 ? "1fr 1fr" : "1fr", gap: 12, marginBottom: 20 }}>
+                    {active.length > 1 && (
+                      <>
+                        <div style={{ background: BG[melhor], borderRadius: 10, padding: "12px 14px" }}>
+                          <div style={{ fontSize: 10, color: COLORS[melhor], fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Maior ganho pro vendedor</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "#1e293b" }}>{MODELS.find(m => m.id === melhor)?.label}</div>
+                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{fmt(res[melhor].total)} neste cenário</div>
+                        </div>
+                        <div style={{ background: "#f0fdf4", borderRadius: 10, padding: "12px 14px" }}>
+                          <div style={{ fontSize: 10, color: "#047857", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Menor custo pra empresa</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "#1e293b" }}>{MODELS.find(m => m.id === maisBarato)?.label}</div>
+                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{fmt(fixo * 1.7 + res[maisBarato].comissao)} neste cenário</div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {insights.map((ins, i) => (
+                      <div key={i} style={{ fontSize: 13, color: "#475569", lineHeight: 1.6, background: "#f8fafc", borderRadius: 8, padding: "10px 14px" }}>{ins}</div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
