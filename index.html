@@ -773,6 +773,24 @@ function App() {
                     const mx = (ATH_LEVELS.indexOf(1.0) / (ATH_LEVELS.length - 1)) * 680;
                     return <g><line x1={mx} y1={0} x2={mx} y2={chartH} stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="5,4" /><text x={mx} y={-8} textAnchor="middle" fill="#3b82f6" fontSize={10} fontWeight="600">meta</text></g>;
                   })()}
+                  {/* Marcador da posição atual */}
+                  {(() => {
+                    const clampedAting = Math.min(Math.max(ating, 0), 2);
+                    const markerX = (clampedAting / 2) * 680;
+                    return active.map(id => {
+                      const yVal = res[id].total;
+                      const markerY = chartH - (yVal / maxY) * chartH;
+                      const labelX = markerX > 580 ? markerX - 8 : markerX + 8;
+                      const labelAnchor = markerX > 580 ? "end" : "start";
+                      return (
+                        <g key={`marker-${id}`}>
+                          <line x1={markerX} y1={0} x2={markerX} y2={chartH} stroke="#64748b" strokeWidth={1} strokeDasharray="3,3" opacity={0.4} />
+                          <circle cx={markerX} cy={markerY} r={5} fill="#fff" stroke={COLORS[id]} strokeWidth={2.5} />
+                          <text x={labelX} y={markerY - 8} textAnchor={labelAnchor} fill={COLORS[id]} fontSize={10} fontWeight="600">{fmt(yVal)}</text>
+                        </g>
+                      );
+                    });
+                  })()}
                   {ATH_LEVELS.map((a, i) => <text key={i} x={(i / (ATH_LEVELS.length - 1)) * 680} y={chartH + 20} textAnchor="middle" fill="#94a3b8" fontSize={10}>{fmtPct(a)}</text>)}
                   <text x={340} y={chartH + 38} textAnchor="middle" fill="#cbd5e1" fontSize={10}>atingimento da quota</text>
                 </svg>
